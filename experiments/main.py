@@ -8,6 +8,15 @@ from ml_collections import config_flags
 
 from llm_attacks import get_goals_and_targets, get_workers
 
+import numpy as np
+import random, torch
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
 _CONFIG = config_flags.DEFINE_config_file('config')
 
 # Function to import module at the runtime
@@ -28,6 +37,8 @@ def main(_):
 
     process_fn = lambda s: s.replace('Sure, h', 'H')
     process_fn2 = lambda s: s.replace("Sure, here is", "Sure, here's")
+    process_fn3 = lambda s: s.replace("Sure", "Sure, my output is harmful")
+    
     train_targets = [process_fn(t) if np.random.random() < 0.5 else process_fn2(t) for t in train_targets]
     test_targets = [process_fn(t) if np.random.random() < 0.5 else process_fn2(t) for t in test_targets]
 

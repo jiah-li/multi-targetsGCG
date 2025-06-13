@@ -168,10 +168,13 @@ class GCGMultiPromptAttack(MultiPromptAttack):
                     for k, worker in enumerate(self.workers):
                         worker(self.prompts[k][i], "logits", worker.model, cand, return_ids=True)
                     logits, ids = zip(*[worker.results.get() for worker in self.workers])
-                    loss[j*batch_size:(j+1)*batch_size] += sum([
-                        target_weight*self.prompts[k][i].target_loss(logit, id).mean(dim=-1).to(main_device) 
-                        for k, (logit, id) in enumerate(zip(logits, ids))
-                    ])
+                    sum_target_loss = 0
+                    for k, (logit, id) in enumerate(zip(logits, ids)):
+                        single_target_loss = target_weight*self.prompts[k][i].target_loss(logit, id).mean(dim=-1).to(main_device)
+                        if sum_target_loss == 0: sum_target_loss = single_target_loss
+                        else: sum_target_loss+=single_target_loss
+                        del single_target_loss; gc.collect(); torch.cuda.empty_cache()
+                    loss[j*batch_size:(j+1)*batch_size] += sum_target_loss
                     if control_weight != 0:
                         loss[j*batch_size:(j+1)*batch_size] += sum([
                             control_weight*self.prompts[k][i].control_loss(logit, id).mean(dim=-1).to(main_device)

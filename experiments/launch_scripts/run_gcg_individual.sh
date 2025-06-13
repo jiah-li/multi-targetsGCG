@@ -18,7 +18,8 @@ else
     echo "Folder '../results' already exists."
 fi
 
-for data_offset in 0 10 20 30 40 50 60 70 80 90
+# for data_offset in 0 10 20 30 40 50 60 70 80 90
+for data_offset in 40
 do
 
     python -u ../main.py \
@@ -30,6 +31,9 @@ do
         --config.data_offset=$data_offset \
         --config.n_steps=1000 \
         --config.test_steps=50 \
-        --config.batch_size=512
+        --config.batch_size=512 \
+        --config.stop_on_success=True
 
 done
+
+# CUDA_VISIBLE_DEVICES=6 bash run_gcg_individual.sh llama2 behaviors
