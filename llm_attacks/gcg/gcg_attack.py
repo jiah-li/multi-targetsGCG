@@ -9,7 +9,7 @@ from llm_attacks import AttackPrompt, MultiPromptAttack, PromptManager
 from llm_attacks import get_embedding_matrix, get_embeddings
 
 
-def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
+def token_gradients(model, tokenizer, input_ids, input_slice, target_slice, loss_slice):
 
     """
     Computes gradients of the loss with respect to the coordinates.
@@ -32,7 +32,13 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     torch.Tensor
         The gradients of each token in the input_slice with respect to the loss.
     """
-
+    # Prepare new targets
+    t = tokenizer.decode(input_ids[target_slice])
+    process_fn = lambda s: s.replace('Sure, h', 'H')
+    process_fn2 = lambda s: s.replace("Sure, here is", "Sure, here's")
+    process_fn3 = lambda s: s.replace("Sure", "Sure, my output is harmful")
+    targets = [t, process_fn(t), process_fn2(t), process_fn3(t)]
+    
     embed_weights = get_embedding_matrix(model)
     one_hot = torch.zeros(
         input_ids[input_slice].shape[0],
@@ -48,21 +54,34 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     one_hot.requires_grad_()
     input_embeds = (one_hot @ embed_weights).unsqueeze(0)
     
-    # now stitch it together with the rest of the embeddings
-    embeds = get_embeddings(model, input_ids.unsqueeze(0)).detach()
-    full_embeds = torch.cat(
-        [
-            embeds[:,:input_slice.start,:], 
-            input_embeds, 
-            embeds[:,input_slice.stop:,:]
-        ], 
-        dim=1)
-    
-    logits = model(inputs_embeds=full_embeds).logits
-    targets = input_ids[target_slice]
-    loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], targets)
-    
-    loss.backward()
+    losses = []
+    # Prepare input_ids and slices
+    for t in targets:
+        cur_ids = torch.cat([
+            input_ids[:target_slice.start], 
+            torch.tensor(
+                tokenizer.encode(t, add_special_tokens=False)
+            ).to(input_ids.device)
+        ])
+        target_slice, loss_slice = slice(target_slice.start, len(cur_ids)), slice(loss_slice.start, len(cur_ids)-1)
+        
+        # now stitch it together with the rest of the embeddings
+        embeds = get_embeddings(model, cur_ids.unsqueeze(0)).detach()
+        full_embeds = torch.cat(
+            [
+                embeds[:,:input_slice.start,:], 
+                input_embeds, 
+                embeds[:,input_slice.stop:,:]
+            ], 
+            dim=1)
+        logits = model(inputs_embeds=full_embeds).logits
+        targets = cur_ids[target_slice]
+        loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], targets)
+        losses.append(loss)
+    confidences = [-loss for loss in losses] 
+    softmax_weights = torch.softmax(torch.tensor(confidences), dim=0)
+    total_loss = sum(w * loss for w, loss in zip(softmax_weights, losses))
+    total_loss.backward()
     
     return one_hot.grad.clone()
 
@@ -75,6 +94,7 @@ class GCGAttackPrompt(AttackPrompt):
     def grad(self, model):
         return token_gradients(
             model, 
+            self.tokenizer, 
             self.input_ids.to(model.device), 
             self._control_slice, 
             self._target_slice, 
