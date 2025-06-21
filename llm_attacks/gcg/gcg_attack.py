@@ -5,11 +5,11 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 
-from llm_attacks import AttackPrompt, MultiPromptAttack, PromptManager
-from llm_attacks import get_embedding_matrix, get_embeddings
+from llm_attacks import AttackPrompt, TargetsPrompt, MultiPromptAttack, PromptManager
+from llm_attacks import get_embedding_matrix, get_embeddings, process_targets
 
 
-def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
+def token_gradients(model, tokenizer, target_str, input_ids, input_slice, target_slice, loss_slice):
 
     """
     Computes gradients of the loss with respect to the coordinates.
@@ -32,7 +32,11 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     torch.Tensor
         The gradients of each token in the input_slice with respect to the loss.
     """
-
+    assert target_str.startswith('Sure, here '), "Target must be start with 'Sure, here'"
+    # Prepare new targets
+    t = tokenizer.decode(input_ids[target_slice])
+    targets = process_targets(target_str)
+    
     embed_weights = get_embedding_matrix(model)
     one_hot = torch.zeros(
         input_ids[input_slice].shape[0],
@@ -48,23 +52,41 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     one_hot.requires_grad_()
     input_embeds = (one_hot @ embed_weights).unsqueeze(0)
     
-    # now stitch it together with the rest of the embeddings
-    embeds = get_embeddings(model, input_ids.unsqueeze(0)).detach()
-    full_embeds = torch.cat(
-        [
-            embeds[:,:input_slice.start,:], 
-            input_embeds, 
-            embeds[:,input_slice.stop:,:]
-        ], 
-        dim=1)
+    losses = []
+    # Prepare input_ids and slices
+    for t in targets:
+        cur_ids = torch.cat([
+            input_ids[:target_slice.start], 
+            torch.tensor(
+                tokenizer.encode(t, add_special_tokens=False)
+            ).to(input_ids.device)
+        ])
+        target_slice, loss_slice = slice(target_slice.start, len(cur_ids)), slice(loss_slice.start, len(cur_ids)-1)
+        
+        # now stitch it together with the rest of the embeddings
+        embeds = get_embeddings(model, cur_ids.unsqueeze(0)).detach()
+        full_embeds = torch.cat(
+            [
+                embeds[:,:input_slice.start,:], 
+                input_embeds, 
+                embeds[:,input_slice.stop:,:]
+            ], 
+            dim=1)
+        logits = model(inputs_embeds=full_embeds).logits
+        target_ids = cur_ids[target_slice]
+        loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], target_ids)
+        losses.append(loss)
+        
+    del cur_ids, embeds, full_embeds, logits, target_ids; gc.collect()
+    torch.cuda.empty_cache()
+
+    confidences = [-loss for loss in losses] 
+    softmax_weights = torch.softmax(torch.tensor(confidences), dim=0)
+    total_loss = sum(w * loss for w, loss in zip(softmax_weights, losses))
+    total_loss.backward()
     
-    logits = model(inputs_embeds=full_embeds).logits
-    targets = input_ids[target_slice]
-    loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], targets)
-    
-    loss.backward()
-    
-    return one_hot.grad.clone()
+    return one_hot.grad.clone(), losses.index(min(losses))
+    # return one_hot.grad.clone()
 
 class GCGAttackPrompt(AttackPrompt):
 
@@ -75,11 +97,22 @@ class GCGAttackPrompt(AttackPrompt):
     def grad(self, model):
         return token_gradients(
             model, 
+            self.tokenizer, 
+            self.target_str,
             self.input_ids.to(model.device), 
             self._control_slice, 
             self._target_slice, 
             self._loss_slice
         )
+
+class GCGTargetsPrompt(TargetsPrompt):
+
+    def __init__(self, *args, **kwargs):
+        
+        super().__init__(*args, **kwargs)
+        
+    def grad(self, model):
+        return self.prompts_list[0].grad(model) 
 
 class GCGPromptManager(PromptManager):
 
@@ -134,13 +167,15 @@ class GCGMultiPromptAttack(MultiPromptAttack):
         main_device = self.models[0].device
         control_cands = []
 
-        for j, worker in enumerate(self.workers):
-            worker(self.prompts[j], "grad", worker.model)
+        # for j, worker in enumerate(self.workers):
+        #     worker(self.prompts[j], "grad", worker.model)
 
         # Aggregate gradients
         grad = None
         for j, worker in enumerate(self.workers):
-            new_grad = worker.results.get().to(main_device)
+            # new_grad = worker.results.get().to(main_device)
+            new_grad, target_idx = self.prompts[j].grad(worker.model)
+            new_grad.to(main_device)
             new_grad = new_grad / new_grad.norm(dim=-1, keepdim=True)
             if grad is None:
                 grad = torch.zeros_like(new_grad)
@@ -165,23 +200,23 @@ class GCGMultiPromptAttack(MultiPromptAttack):
                 # we can manage VRAM better this way
                 progress = tqdm(range(len(self.prompts[0])), total=len(self.prompts[0])) if verbose else enumerate(self.prompts[0])
                 for i in progress:
-                    for k, worker in enumerate(self.workers):
-                        worker(self.prompts[k][i], "logits", worker.model, cand, return_ids=True)
-                    logits, ids = zip(*[worker.results.get() for worker in self.workers])
+                    # for k, worker in enumerate(self.workers):
+                    #     worker(self.prompts[k][i][target_idx], "logits", worker.model, cand, return_ids=True)
+                    # logits, ids = zip(*[worker.results.get() for worker in self.workers])
+                    logits, ids = zip(*[self.prompts[k][i][target_idx].logits(worker.model, cand, return_ids=True) for k, worker in enumerate(self.workers)])
                     sum_target_loss = 0
                     for k, (logit, id) in enumerate(zip(logits, ids)):
-                        single_target_loss = target_weight*self.prompts[k][i].target_loss(logit, id).mean(dim=-1).to(main_device)
+                        single_target_loss = target_weight*self.prompts[k][i][target_idx].target_loss(logit, id).mean(dim=-1).to(main_device)
                         if sum_target_loss == 0: sum_target_loss = single_target_loss
                         else: sum_target_loss+=single_target_loss
                         del single_target_loss; gc.collect(); torch.cuda.empty_cache()
                     loss[j*batch_size:(j+1)*batch_size] += sum_target_loss
                     if control_weight != 0:
                         loss[j*batch_size:(j+1)*batch_size] += sum([
-                            control_weight*self.prompts[k][i].control_loss(logit, id).mean(dim=-1).to(main_device)
+                            control_weight*self.prompts[k][i][target_idx].control_loss(logit, id).mean(dim=-1).to(main_device)
                             for k, (logit, id) in enumerate(zip(logits, ids))
                         ])
-                    del logits, ids ; gc.collect()
-                    
+                        del logits, ids, sum_target_loss; gc.collect(); torch.cuda.empty_cache()
                     if verbose:
                         progress.set_description(f"loss={loss[j*batch_size:(j+1)*batch_size].min().item()/(i+1):.4f}")
 

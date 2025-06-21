@@ -1,4 +1,5 @@
 from .gcg_attack import GCGAttackPrompt as AttackPrompt
+from .gcg_attack import GCGTargetsPrompt as TargetsPrompt
 from .gcg_attack import GCGPromptManager as PromptManager
 from .gcg_attack import GCGMultiPromptAttack as MultiPromptAttack
 
