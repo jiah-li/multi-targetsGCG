@@ -2,11 +2,13 @@ __version__ = '0.0.1'
 
 from .base.attack_manager import (
     AttackPrompt,
+    TargetsPrompt,
     PromptManager,
     MultiPromptAttack,
     IndividualPromptAttack,
     ProgressiveMultiPromptAttack,
     EvaluateAttack,
+    process_targets, 
     get_embedding_layer,
     get_embedding_matrix,
     get_embeddings,
