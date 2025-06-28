@@ -28,6 +28,7 @@ def main(_):
     mp.set_start_method('spawn')
 
     params = _CONFIG.value
+    if params.transfer: params.progressive_goals = False
 
     attack_lib = dynamic_import(f'llm_attacks.{params.attack}')
 

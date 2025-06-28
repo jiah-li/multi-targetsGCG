@@ -745,11 +745,12 @@ class MultiPromptAttack(object):
         for j, worker in enumerate(workers):
             worker(prompts[j], "test", worker.model)
         rts = [worker.results.get() for worker in workers]
-        model_tests = np.array([[rts[0][0][:2]]])
-        gen_str = rts[0][0][-1]
+        for j, worker in enumerate(workers):
+            model_tests = np.array([[_[:2] for _ in rts[j]]])
+            gen_str = [_[-1] for _ in rts[j]]
         model_tests_jb = model_tests[...,0].tolist()
         model_tests_mb = model_tests[...,1].tolist()
-        model_tests_loss = [[999.]] * len(workers)
+        model_tests_loss = [[999.]* len(model_tests_jb[0])] * len(workers)
         if include_loss:
             for j, worker in enumerate(workers):
                 worker(prompts[j], "test_loss", worker.model)
@@ -1031,6 +1032,8 @@ class ProgressiveMultiPromptAttack(object):
             )
             if num_goals == len(self.goals) and num_workers == len(self.workers):
                 stop_inner_on_success = False
+            # TODO: change stop_inner_on_success
+            stop_inner_on_success = True
             control, loss, inner_steps = attack.run(
                 n_steps=n_steps-step,
                 batch_size=batch_size,
