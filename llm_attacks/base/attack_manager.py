@@ -316,15 +316,36 @@ class AttackPrompt(object):
             attn_mask = (ids != pad_tok).type(ids.dtype)
         else:
             attn_mask = None
-
+        # 串行运算
+        logits = torch.zeros((ids.shape[0],ids.shape[1],model.config.vocab_size), device=ids.device, dtype=model.dtype)
+        step = max(ids.shape[0]//256, 1)
+        for i in range(0, ids.shape[0], step):
+            one_batch = ids[i:i+step]
+            if attn_mask is not None:
+                batch_attention_mask = attn_mask[i:i+step]
+            else:
+                batch_attention_mask = None
+            temp = model(input_ids=one_batch, attention_mask=batch_attention_mask).logits
+            logits[i:i+step] = temp
+            del temp; gc.collect()
         if return_ids:
-            del locs, test_ids ; gc.collect()
-            return model(input_ids=ids, attention_mask=attn_mask).logits, ids
+            del attn_mask; gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            return logits, ids
         else:
-            del locs, test_ids
-            logits = model(input_ids=ids, attention_mask=attn_mask).logits
-            del ids ; gc.collect()
-            return logits
+            del ids ,attn_mask; gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            return logits            
+        # if return_ids:
+        #     del locs, test_ids ; gc.collect()
+        #     return model(input_ids=ids, attention_mask=attn_mask).logits, ids
+        # else:
+        #     del locs, test_ids
+        #     logits = model(input_ids=ids, attention_mask=attn_mask).logits
+        #     del ids ; gc.collect()
+        #     return logits
     
     def target_loss(self, logits, ids):
         crit = nn.CrossEntropyLoss(reduction='none')
