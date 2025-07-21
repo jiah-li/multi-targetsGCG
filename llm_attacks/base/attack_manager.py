@@ -684,7 +684,7 @@ class MultiPromptAttack(object):
         prev_loss=np.infty,
         stop_on_success=True,
         test_steps=50,
-        log_first=False,
+        log_first=True,
         filter_cand=True,
         verbose=True
     ):
@@ -1607,7 +1607,6 @@ def get_goals_and_targets(params):
     test_goals = getattr(params, 'test_goals', [])
     test_targets = getattr(params, 'test_targets', [])
     offset = getattr(params, 'data_offset', 0)
-
     if params.train_data:
         train_data = pd.read_csv(params.train_data)
         train_targets = train_data['target'].tolist()[offset:offset+params.n_train_data]

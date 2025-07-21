@@ -33,15 +33,15 @@ do
             --config.num_train_models=1 \
             --config.allow_non_ascii=False \
             --config.n_train_data=$n \
-            # --config.n_test_data=$n \
             --config.data_offset=$data_offset \
             --config.n_steps=500 \
             --config.test_steps=1 \
-            --config.batch_size=512
+            --config.batch_size=512 \
+            # --config.n_test_data=$n \
     done
 done
 
-# CUDA_VISIBLE_DEVICES=3 bash run_gcg_multiple.sh llama2 0
+# CUDA_VISIBLE_DEVICES=0 bash run_gcg_multiple.sh llama2 0
 # CUDA_VISIBLE_DEVICES=4 bash run_gcg_multiple.sh llama2 20
 # CUDA_VISIBLE_DEVICES=5 bash run_gcg_multiple.sh llama2 40
 # CUDA_VISIBLE_DEVICES=6 bash run_gcg_multiple.sh llama2 60
