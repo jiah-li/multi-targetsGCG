@@ -14,5 +14,3 @@ def get_config():
     config.conversation_templates=['llama-2']
 
     return config
-
-# huggingface-cli download --token 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 --resume-download meta-llama/llama-2-7b-chat-hf --local-dir /data/jiahli/mogcg/llm-attacks/DIR/llama-2-7b-chat-hf
