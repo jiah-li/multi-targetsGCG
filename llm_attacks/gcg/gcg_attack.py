@@ -54,30 +54,35 @@ def token_gradients(model, tokenizer, target_str, input_ids, input_slice, target
     
     losses = []
     # Prepare input_ids and slices
+    embeds = get_embeddings(model, input_ids[:target_slice.start].unsqueeze(0)).detach()
+    body_embeds = torch.cat(
+        [
+            embeds[:,:input_slice.start,:], 
+            input_embeds, 
+            embeds[:,input_slice.stop:,:]
+        ], 
+        dim=1)
+    outputs = model(inputs_embeds=body_embeds, use_cache=True)
+    logits_body = outputs.logits
+    past_key_values = outputs.past_key_values
     for t in targets:
-        cur_ids = torch.cat([
-            input_ids[:target_slice.start], 
-            torch.tensor(
-                tokenizer.encode(t, add_special_tokens=False)
-            ).to(input_ids.device)
-        ])
-        target_slice, loss_slice = slice(target_slice.start, len(cur_ids)), slice(loss_slice.start, len(cur_ids)-1)
+        target_ids = torch.tensor(tokenizer.encode(t, add_special_tokens=False)).to(input_ids.device).unsqueeze(0)
+        target_slice = slice(target_slice.start, target_slice.start+target_ids.shape[1])
+        loss_slice = slice(loss_slice.start, target_slice.start+target_ids.shape[1]-1)
         
-        # now stitch it together with the rest of the embeddings
-        embeds = get_embeddings(model, cur_ids.unsqueeze(0)).detach()
-        full_embeds = torch.cat(
-            [
-                embeds[:,:input_slice.start,:], 
-                input_embeds, 
-                embeds[:,input_slice.stop:,:]
-            ], 
-            dim=1)
-        logits = model(inputs_embeds=full_embeds).logits
-        target_ids = cur_ids[target_slice]
-        loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], target_ids)
+        # Computing logits of different targets.
+        position_ids_target = torch.arange(target_slice.start, target_slice.stop, device=input_ids.device).unsqueeze(0)
+        logits_target = model(
+                input_ids=target_ids,
+                past_key_values = past_key_values,
+                position_ids = position_ids_target,
+                use_cache = True,
+            ).logits
+        logits = torch.cat([logits_body, logits_target], dim=1)
+        loss = nn.CrossEntropyLoss()(logits[0,loss_slice,:], target_ids[0])
         losses.append(loss)
         
-    del cur_ids, embeds, full_embeds, logits, target_ids; gc.collect()
+    del embeds, body_embeds, logits_body, logits_target, past_key_values, logits, target_ids; gc.collect()
     torch.cuda.empty_cache()
 
     confidences = [-loss for loss in losses] 
