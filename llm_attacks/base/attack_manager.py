@@ -809,6 +809,7 @@ class MultiPromptAttack(object):
         tests['n_loss'] = n_loss
         tests['total'] = total_tests
         tests['gen_str'] = gen_str
+        tests['step_num'] = step_num
 
         with open(self.logfile, 'r') as f:
             log = json.load(f)
