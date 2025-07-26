@@ -165,9 +165,12 @@ class GCGMultiPromptAttack(MultiPromptAttack):
                 # we can manage VRAM better this way
                 progress = tqdm(range(len(self.prompts[0])), total=len(self.prompts[0])) if verbose else enumerate(self.prompts[0])
                 for i in progress:
+                    # for k, worker in enumerate(self.workers):
+                    #     worker(self.prompts[k][i], "logits", worker.model, cand, return_ids=True)
+                    # logits, ids = zip(*[worker.results.get() for worker in self.workers])
                     for k, worker in enumerate(self.workers):
-                        worker(self.prompts[k][i], "logits", worker.model, cand, return_ids=True)
-                    logits, ids = zip(*[worker.results.get() for worker in self.workers])
+                        logits, ids = zip(*[self.prompts[k][i].logits(worker.model, cand, return_ids=True) \
+                            for k, worker in enumerate(self.workers)])
                     sum_target_loss = 0
                     for k, (logit, id) in enumerate(zip(logits, ids)):
                         single_target_loss = target_weight*self.prompts[k][i].target_loss(logit, id).mean(dim=-1).to(main_device)

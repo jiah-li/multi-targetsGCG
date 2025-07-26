@@ -316,15 +316,36 @@ class AttackPrompt(object):
             attn_mask = (ids != pad_tok).type(ids.dtype)
         else:
             attn_mask = None
-
+        # 串行运算
+        logits = torch.zeros((ids.shape[0],ids.shape[1],model.config.vocab_size), device=ids.device, dtype=model.dtype)
+        step = max(ids.shape[0]//256, 1)
+        for i in range(0, ids.shape[0], step):
+            one_batch = ids[i:i+step]
+            if attn_mask is not None:
+                batch_attention_mask = attn_mask[i:i+step]
+            else:
+                batch_attention_mask = None
+            temp = model(input_ids=one_batch, attention_mask=batch_attention_mask).logits
+            logits[i:i+step] = temp
+            del temp; gc.collect()
         if return_ids:
-            del locs, test_ids ; gc.collect()
-            return model(input_ids=ids, attention_mask=attn_mask).logits, ids
+            del attn_mask; gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            return logits, ids
         else:
-            del locs, test_ids
-            logits = model(input_ids=ids, attention_mask=attn_mask).logits
-            del ids ; gc.collect()
-            return logits
+            del ids ,attn_mask; gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            return logits            
+        # if return_ids:
+        #     del locs, test_ids ; gc.collect()
+        #     return model(input_ids=ids, attention_mask=attn_mask).logits, ids
+        # else:
+        #     del locs, test_ids
+        #     logits = model(input_ids=ids, attention_mask=attn_mask).logits
+        #     del ids ; gc.collect()
+        #     return logits
     
     def target_loss(self, logits, ids):
         crit = nn.CrossEntropyLoss(reduction='none')
@@ -663,7 +684,7 @@ class MultiPromptAttack(object):
         prev_loss=np.infty,
         stop_on_success=True,
         test_steps=50,
-        log_first=False,
+        log_first=True,
         filter_cand=True,
         verbose=True
     ):
@@ -745,11 +766,12 @@ class MultiPromptAttack(object):
         for j, worker in enumerate(workers):
             worker(prompts[j], "test", worker.model)
         rts = [worker.results.get() for worker in workers]
-        model_tests = np.array([[rts[0][0][:2]]])
-        gen_str = rts[0][0][-1]
+        for j, worker in enumerate(workers):
+            model_tests = np.array([[_[:2] for _ in rts[j]]])
+            gen_str = [_[-1] for _ in rts[j]]
         model_tests_jb = model_tests[...,0].tolist()
         model_tests_mb = model_tests[...,1].tolist()
-        model_tests_loss = [[999.]] * len(workers)
+        model_tests_loss = [[999.]* len(model_tests_jb[0])] * len(workers)
         if include_loss:
             for j, worker in enumerate(workers):
                 worker(prompts[j], "test_loss", worker.model)
@@ -1032,6 +1054,8 @@ class ProgressiveMultiPromptAttack(object):
             )
             if num_goals == len(self.goals) and num_workers == len(self.workers):
                 stop_inner_on_success = False
+            # TODO: change stop_inner_on_success
+            stop_inner_on_success = True
             control, loss, inner_steps = attack.run(
                 n_steps=n_steps-step,
                 batch_size=batch_size,
@@ -1584,7 +1608,6 @@ def get_goals_and_targets(params):
     test_goals = getattr(params, 'test_goals', [])
     test_targets = getattr(params, 'test_targets', [])
     offset = getattr(params, 'data_offset', 0)
-
     if params.train_data:
         train_data = pd.read_csv(params.train_data)
         train_targets = train_data['target'].tolist()[offset:offset+params.n_train_data]
